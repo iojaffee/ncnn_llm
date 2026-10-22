@@ -1,0 +1,26 @@
+src/utils/tokenizer/bpe_tokenizer.cpp
+  s_21e577f9d144c8::t_b45c5ad44660b6 681-691
+  s_21e577f9d144c8::t_03e3bf73593d84 231-411
+src/utils/prompt.cpp
+  s_21e577f9d144c8::t_c7119d8117bb87 210-214
+src/utils/tokenizer/bpe_tokenizer.h
+  s_21e577f9d144c8::t_f7f73c5870cd61 60,97
+tests/test_llm.cpp
+  s_21e577f9d144c8::t_ada91d8894b453 199-216,353
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cce98cdd2c1bebb0513b57806aa8ba5c33aa82c3",
+  "prompts": {},
+  "sessions": {
+    "s_21e577f9d144c8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16259-5713-75f0-8868-db4632535444",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "iojaffee <iojaffee@163.com>"
+    }
+  }
+}
