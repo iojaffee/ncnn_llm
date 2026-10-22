@@ -57,6 +57,7 @@ private:
     static std::unordered_map<std::string, int> LoadMergesRank(const std::string& merges_path);
     void EnsureSpecialTokens(const SpecialTokensConfig& spec, bool add_if_missing);
     static std::vector<std::string> PretokenizeSentencePiece(const std::string& text);
+    static std::vector<std::string> PretokenizeByteLevel(const std::string& text);
 
     const std::vector<std::string>& BpeForPieceCached(const std::string& piece) const;
     std::vector<std::string> BpeForPiece(const std::string& piece) const;

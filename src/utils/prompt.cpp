@@ -207,7 +207,11 @@ static std::string apply_chatml_template(
         prompt << "<|im_start|>assistant\n";
         if (enable_thinking) {
             prompt << "<think>\n";
-        
+        } else if (qwen3) {
+            // Qwen3's official chat template closes an empty thinking block
+            // when thinking is disabled.  Omitting it changes the next-token
+            // context and can make the small model fall into repetition.
+            prompt << "<think>\n\n</think>\n\n";
         }
     }
 

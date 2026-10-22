@@ -196,6 +196,24 @@ bool test_thinking_mode() {
     return true;
 }
 
+// Qwen3 expects an explicit empty thinking block when thinking is disabled.
+// Without it the assistant prompt changes and small checkpoints can enter a
+// repetitive generation loop.
+bool test_qwen3_empty_thinking_block() {
+    std::vector<Message> messages = {
+        {"user", "Hello", "", {}}
+    };
+
+    const std::string prompt = apply_chat_template(
+        TemplateType::QWEN3, messages, {}, true, false);
+    const std::string suffix = "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+    TEST_ASSERT(prompt.size() >= suffix.size() &&
+                    prompt.compare(prompt.size() - suffix.size(), suffix.size(), suffix) == 0,
+                "Qwen3 no-thinking prompt should close an empty think block");
+
+    return true;
+}
+
 // Test 10: Long conversation context
 bool test_long_conversation() {
     std::vector<Message> messages;
@@ -332,6 +350,7 @@ int main() {
     runner.add_test("system_prompt", test_system_prompt);
     runner.add_test("empty_tools", test_empty_tools);
     runner.add_test("thinking_mode", test_thinking_mode);
+    runner.add_test("qwen3_empty_thinking_block", test_qwen3_empty_thinking_block);
     runner.add_test("long_conversation", test_long_conversation);
 
     std::cout << "\n=== Model Tests ===\n\n";

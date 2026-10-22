@@ -228,6 +228,187 @@ std::vector<std::string> BpeTokenizer::PretokenizeSentencePiece(const std::strin
     return out;
 }
 
+// Qwen2/Qwen3 use the following regex before applying the GPT-2 byte map:
+//
+//   (?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}|
+//    ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
+//
+// The project deliberately does not depend on a heavyweight Unicode regex
+// library, so the small scanner below implements the same boundaries for the
+// scripts commonly used by Qwen.  Keeping these boundaries is important:
+// byte-level BPE merges must not cross a regex match.
+std::vector<std::string> BpeTokenizer::PretokenizeByteLevel(const std::string& text) {
+    struct CharSpan {
+        uint32_t cp;
+        size_t begin;
+        size_t end;
+    };
+
+    auto is_letter = [](uint32_t cp) {
+        // ASCII and Latin extensions.
+        if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z')) return true;
+        if ((cp >= 0x00C0 && cp <= 0x02AF) || (cp >= 0x1E00 && cp <= 0x1EFF)) return true;
+
+        // Greek, Cyrillic, Armenian, Hebrew and Arabic letters.
+        if (cp >= 0x0370 && cp <= 0x052F) return true;
+        if (cp >= 0x0531 && cp <= 0x058F) return true;
+        if (cp >= 0x05D0 && cp <= 0x05EA) return true;
+        if ((cp >= 0x0620 && cp <= 0x063F) || (cp >= 0x0641 && cp <= 0x064A) ||
+            (cp >= 0x0671 && cp <= 0x06D3)) return true;
+
+        // Indic and South-East Asian scripts.
+        if ((cp >= 0x0900 && cp <= 0x0DFF) || (cp >= 0x0E00 && cp <= 0x0EFF) ||
+            (cp >= 0x1000 && cp <= 0x17FF)) return true;
+
+        // Japanese, Korean and Chinese.  Exclude CJK punctuation by using the
+        // letter/ideograph blocks rather than the whole 0x3000 range.
+        if ((cp >= 0x3041 && cp <= 0x30FF) || (cp >= 0x3400 && cp <= 0x4DBF) ||
+            (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) ||
+            (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0x1100 && cp <= 0x11FF)) return true;
+
+        // Full-width Latin letters.
+        if ((cp >= 0xFF21 && cp <= 0xFF3A) || (cp >= 0xFF41 && cp <= 0xFF5A)) return true;
+
+        // Common supplementary-plane alphabetic blocks (Deseret, Osage, etc.).
+        if ((cp >= 0x10000 && cp <= 0x1D7FF) || (cp >= 0x1E800 && cp <= 0x1EEFF)) return true;
+        return false;
+    };
+
+    auto is_number = [](uint32_t cp) {
+        if (cp >= '0' && cp <= '9') return true;
+        if ((cp >= 0x0660 && cp <= 0x0669) || (cp >= 0x06F0 && cp <= 0x06F9) ||
+            (cp >= 0x0966 && cp <= 0x096F) || (cp >= 0x09E6 && cp <= 0x09EF) ||
+            (cp >= 0x0A66 && cp <= 0x0AEF) || (cp >= 0x0B66 && cp <= 0x0BEF) ||
+            (cp >= 0x0C66 && cp <= 0x0CEF) || (cp >= 0x0D66 && cp <= 0x0DEF) ||
+            (cp >= 0x0E50 && cp <= 0x0E59) || (cp >= 0x0ED0 && cp <= 0x0ED9) ||
+            (cp >= 0x0F20 && cp <= 0x0F29) || (cp >= 0x1040 && cp <= 0x1049) ||
+            (cp >= 0x17E0 && cp <= 0x17E9) || (cp >= 0xFF10 && cp <= 0xFF19)) return true;
+        return false;
+    };
+
+    std::vector<CharSpan> chars;
+    chars.reserve(text.size());
+    size_t pos = 0;
+    while (pos < text.size()) {
+        const size_t begin = pos;
+        uint32_t cp = 0;
+        size_t len = 0;
+        if (!NextUtf8(text, pos, cp, len)) {
+            // Preserve malformed input byte-for-byte.  Normal model prompts
+            // are valid UTF-8, but silently dropping a byte is surprising.
+            cp = static_cast<unsigned char>(text[begin]);
+            pos = begin + 1;
+        }
+        chars.push_back(CharSpan{cp, begin, pos});
+    }
+
+    const auto is_space = [](uint32_t cp) {
+        return cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == '\f' ||
+               cp == '\v' || cp == 0x00A0 || cp == 0x1680 || cp == 0x2000 ||
+               (cp >= 0x2001 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 ||
+               cp == 0x202F || cp == 0x205F || cp == 0x3000;
+    };
+    const auto is_newline = [](uint32_t cp) { return cp == '\r' || cp == '\n'; };
+    const auto is_word = [&](uint32_t cp) { return is_letter(cp) || is_number(cp); };
+    const auto is_punctuation = [&](uint32_t cp) { return !is_space(cp) && !is_word(cp); };
+
+    std::vector<std::string> out;
+    out.reserve(chars.size());
+    auto append = [&](size_t first, size_t last) {
+        if (last > first) out.emplace_back(text, chars[first].begin, chars[last - 1].end - chars[first].begin);
+    };
+
+    auto contraction_length = [&](size_t i) -> size_t {
+        if (i >= chars.size() || chars[i].cp != '\'') return 0;
+        static const char* suffixes[] = {"s", "t", "re", "ve", "m", "ll", "d"};
+        for (const char* suffix : suffixes) {
+            size_t j = i + 1;
+            size_t k = 0;
+            while (suffix[k] != '\0' && j < chars.size()) {
+                uint32_t cp = chars[j].cp;
+                char want = suffix[k];
+                if (cp >= 'A' && cp <= 'Z') cp += 'a' - 'A';
+                if (cp != static_cast<unsigned char>(want)) break;
+                ++j;
+                ++k;
+            }
+            if (suffix[k] == '\0') return j - i;
+        }
+        return 0;
+    };
+
+    size_t i = 0;
+    while (i < chars.size()) {
+        // Contractions are a separate regex alternative and must be checked
+        // before the general punctuation/letter alternatives.
+        if (size_t len = contraction_length(i)) {
+            append(i, i + len);
+            i += len;
+            continue;
+        }
+
+        // Optional one-character prefix followed by a run of letters:
+        // [^\\r\\n\\p{L}\\p{N}]?\\p{L}+
+        size_t letter_start = i;
+        if (is_letter(chars[i].cp)) {
+            ++i;
+        } else if (!is_newline(chars[i].cp) && i + 1 < chars.size() &&
+                   !is_word(chars[i].cp) && is_letter(chars[i + 1].cp)) {
+            ++i;
+            ++i;
+        }
+        if (i != letter_start) {
+            while (i < chars.size() && is_letter(chars[i].cp)) ++i;
+            append(letter_start, i);
+            continue;
+        }
+
+        // Qwen's current tokenizer uses one Unicode number per match.
+        if (is_number(chars[i].cp)) {
+            append(i, i + 1);
+            ++i;
+            continue;
+        }
+
+        // Optional ASCII space + punctuation run, followed by CR/LF.  The
+        // optional prefix is deliberately only a literal space, matching the
+        // tokenizer.json regex rather than treating all whitespace equally.
+        size_t punct_start = i;
+        if (chars[i].cp == ' ' && i + 1 < chars.size() && is_punctuation(chars[i + 1].cp)) ++i;
+        if (i < chars.size() && is_punctuation(chars[i].cp)) {
+            ++i;
+            while (i < chars.size() && is_punctuation(chars[i].cp)) ++i;
+            while (i < chars.size() && is_newline(chars[i].cp)) ++i;
+            append(punct_start, i);
+            continue;
+        }
+        i = punct_start;
+
+        // Whitespace followed by one or more newlines.
+        size_t ws_start = i;
+        while (i < chars.size() && is_space(chars[i].cp) && !is_newline(chars[i].cp)) ++i;
+        if (i < chars.size() && is_newline(chars[i].cp)) {
+            while (i < chars.size() && is_newline(chars[i].cp)) ++i;
+            append(ws_start, i);
+            continue;
+        }
+        i = ws_start;
+
+        // Remaining whitespace alternatives.
+        if (is_space(chars[i].cp)) {
+            ++i;
+            while (i < chars.size() && is_space(chars[i].cp)) ++i;
+            append(ws_start, i);
+            continue;
+        }
+
+        // Defensive fallback for a codepoint not covered by the tables above.
+        append(i, i + 1);
+        ++i;
+    }
+    return out;
+}
+
 // ---------------- BPE core ----------------
 
 std::string BpeTokenizer::PairKey(const std::string& a, const std::string& b) {
@@ -497,12 +678,17 @@ std::vector<int> BpeTokenizer::encode(const std::string& text,
         if (buffer.empty()) return;
 
         if (use_byte_encoder_) {
-            // Mode 2: Byte-Level Encoding
-            // Encode raw bytes to mapped unicode chars
-            std::string encoded_s = ByteEncode(buffer);
-            // Perform BPE on the entire encoded string
-            const auto& toks = BpeForPieceCached(encoded_s);
-            TokensToIds(toks, ids);
+            // Qwen's tokenizer applies its GPT-2 regex first, then maps each
+            // isolated piece to the byte-level Unicode alphabet and runs BPE.
+            // Running BPE over the whole buffer permits merges across spaces,
+            // newlines and CJK/punctuation boundaries, yielding IDs that do
+            // not match the model's training tokenizer.
+            const auto pieces = PretokenizeByteLevel(buffer);
+            for (const auto& piece : pieces) {
+                const auto encoded_s = ByteEncode(piece);
+                const auto& toks = BpeForPieceCached(encoded_s);
+                TokensToIds(toks, ids);
+            }
         } else {
             auto pieces = PretokenizeSentencePiece(buffer);
             for (const auto& p : pieces) {
