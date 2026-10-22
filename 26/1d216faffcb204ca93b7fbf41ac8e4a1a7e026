@@ -1,0 +1,25 @@
+src/ncnn_llm_gpt.h
+  s_21e577f9d144c8::t_d61b46f872e153 138-142
+src/kernel/lm_head.cpp
+  s_21e577f9d144c8::t_d6d9bc13b6d600 209
+  s_21e577f9d144c8::t_097046fc4b8f37 96-106
+src/ncnn_llm_gpt.cpp
+  s_21e577f9d144c8::t_06579cd5345eb3 256-265,278,290,587,766,906,1122
+  s_21e577f9d144c8::t_130b852de6f321 266
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "261d216faffcb204ca93b7fbf41ac8e4a1a7e026",
+  "prompts": {},
+  "sessions": {
+    "s_21e577f9d144c8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16259-5713-75f0-8868-db4632535444",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "iojaffee <iojaffee@163.com>"
+    }
+  }
+}
