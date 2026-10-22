@@ -253,6 +253,17 @@ ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int n
         bool tied_embeddings = (embed_bin == proj_out_bin);
         bool shared_success = false;
 
+        // The decoder's exported hidden state is FP32 even when its internal
+        // tensors use BF16/FP16 storage.  Build and run the standalone head
+        // with a matching FP32 option; otherwise Gemm_arm can pack its weight
+        // as BF16/FP16 at pipeline creation and later interpret it as FP32.
+        lm_head_opt = decoder_net->opt;
+        lm_head_opt.use_bf16_storage = false;
+        lm_head_opt.use_bf16_packed = false;
+        lm_head_opt.use_fp16_storage = false;
+        lm_head_opt.use_fp16_packed = false;
+        lm_head_opt.use_fp16_arithmetic = false;
+
         if (tied_embeddings) {
             ncnn::Mat embed_weight;
             for (const auto* layer : embed_net->layers()) {
@@ -264,8 +275,7 @@ ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int n
             }
 
             if (!embed_weight.empty()) {
-                ncnn::Option lm_opt = embed_net->opt;
-                int ret = lm_head->init_shared(proj_out_param, embed_weight, lm_opt);
+                int ret = lm_head->init_shared(proj_out_param, embed_weight, lm_head_opt);
                 if (ret == 0) {
                     shared_success = true;
                     printf("[ncnn_llm_gpt] Shared LM head with embedding weights (skipped loading %s, saved %zu MB)\n",
@@ -277,8 +287,7 @@ ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int n
         }
 
         if (!shared_success) {
-            ncnn::Option lm_opt = embed_net->opt;
-            int ret = lm_head->init_from_file(proj_out_param, proj_out_bin, lm_opt);
+            int ret = lm_head->init_from_file(proj_out_param, proj_out_bin, lm_head_opt);
             if (ret != 0) {
                 throw std::runtime_error("lm_head init_from_file failed (ret=" +
                                          std::to_string(ret) + "): " + proj_out_param);
@@ -575,7 +584,7 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
     {
         ncnn_llm::ScopedTimer t(pperf.lm_head);
         ncnn::Mat last_hidden = decode_out.row_range(total_prompt_tokens - 1, 1);
-        logits = lm_head->forward(last_hidden, embed_net->opt);
+        logits = lm_head->forward(last_hidden, lm_head_opt);
     }
 
     int next_token_id = 0;
@@ -754,7 +763,7 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
     {
         ncnn_llm::ScopedTimer t(pperf.lm_head);
         ncnn::Mat last_hidden = decode_out.row_range(total_prompt_tokens - 1, 1);
-        logits = lm_head->forward(last_hidden, embed_net->opt);
+        logits = lm_head->forward(last_hidden, lm_head_opt);
     }
     
     int next_token_id = 0;
@@ -894,7 +903,7 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
     {
         ncnn_llm::ScopedTimer t(pperf.lm_head);
         ncnn::Mat last_hidden = decode_out.row_range(total_prompt_tokens - 1, 1);
-        logits = lm_head->forward(last_hidden, embed_net->opt);
+        logits = lm_head->forward(last_hidden, lm_head_opt);
     }
     
     int next_token_id = 0;
@@ -1110,7 +1119,7 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::generate(const std::shared_ptr<n
         ncnn::Mat logits_mat;
         {
             ncnn_llm::ScopedTimer t(do_perf ? &decode_perf.lm_head : nullptr);
-            logits_mat = lm_head->forward(decode_out, embed_net->opt);
+            logits_mat = lm_head->forward(decode_out, lm_head_opt);
         }
 
         LlmTokenSampleConfig sample_cfg;

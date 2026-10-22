@@ -93,7 +93,17 @@ int LlmHead::init_shared(const std::string& proj_out_param_path,
     gemm_layer_->load_param(pd);
 
     shared_weight_ = embed_weight;
-    ncnn::Mat weights[1] = { shared_weight_ };
+
+    // ModelBinFromMatArray returns the supplied Mat as-is.  Gemm's transB=1
+    // path expects its constant B matrix to be a 2-D [N, K] Mat, whereas the
+    // Embed layer keeps the same row-major storage as a flat 1-D Mat.  Passing
+    // the flat view makes Gemm see h=1 and produces invalid LM-head logits on
+    // non-x86 builds (where the custom GEMV fast path is not compiled).
+    ncnn::Mat gemm_weight = embed_weight.reshape(hidden_size_, vocab_size_);
+    if (gemm_weight.empty()) {
+        return -4;
+    }
+    ncnn::Mat weights[1] = { gemm_weight };
     ncnn::ModelBinFromMatArray mb(weights);
     int ret_load = gemm_layer_->load_model(mb);
     if (ret_load != 0) {
@@ -101,7 +111,6 @@ int LlmHead::init_shared(const std::string& proj_out_param_path,
         gemm_layer_ = nullptr;
         return ret_load;
     }
-
 #if defined(__riscv)
     // On riscv the bare-layer Gemm only built the fp16s pipeline, but the
     // decoder hidden states arrive as fp32 (extract() deinterleaves), which
@@ -144,7 +153,6 @@ int LlmHead::init_from_file(const std::string& proj_out_param_path,
     if (ret != 0) return ret;
     ret = fallback_net_->load_model(proj_out_bin_path.c_str());
     if (ret != 0) return ret;
-
     initialized_ = true;
     is_shared_ = false;
     return 0;

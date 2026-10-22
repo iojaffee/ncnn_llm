@@ -135,6 +135,11 @@ private:
     std::shared_ptr<ncnn::Net> embed_net;
     std::shared_ptr<ncnn::Net> proj_out_net;
     std::shared_ptr<ncnn_llm::LlmHead> lm_head;
+    // The decoder's exported hidden state is FP32 even when its internal
+    // tensors use BF16/FP16 storage.  Keep a matching FP32 option for the
+    // standalone LM head so its packed weight pipeline cannot be selected in
+    // a different precision from the tensor passed to forward().
+    ncnn::Option lm_head_opt;
     std::shared_ptr<ncnn::Net> vision_embed_patch;
     std::shared_ptr<ncnn::Net> vision_embed_pos;
     std::shared_ptr<ncnn::Net> vision_encoder;
