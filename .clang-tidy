@@ -1,0 +1,10 @@
+# clang-tidy 配置：clangd（VS Code）与命令行共享
+Checks: >
+  bugprone-*,
+  performance-*,
+  modernize-use-nullptr,
+  modernize-use-emplace,
+  modernize-use-override,
+  -modernize-use-trailing-return-type
+WarningsAsErrors: ''
+FormatStyle: file
